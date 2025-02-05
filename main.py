@@ -1,4 +1,5 @@
-import sys, os, re, base64, pickle, csv, pandas as pd, numpy as np
+#%%
+import sys, os, re, base64, pickle, csv, pandas as pd, numpy as np, utils
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from openai import OpenAI
@@ -19,31 +20,19 @@ from mimetypes import guess_type as guess_mime_type
 class benjamail:
 
     def __init__(self, keys_folder="Keys", credentials_file="credentials.json", token_file="token.json",
-                 openai_key="openai_key.txt", project_key="project_key.txt", organization_key="organization_key.txt"):
+                 openai_key="openai_key.txt", project_key="project_key.txt", organization_key="organization_key.txt",
+                 openai_instructions_file="instructions.txt"):
         self.credentials_file = f"{keys_folder}/{credentials_file}"
         self.token_file = f"{keys_folder}/{token_file}"
         self.api_key = f"{keys_folder}/{openai_key}"
         self.project_key = f"{keys_folder}/{project_key}"
         self.organization_key = f"{keys_folder}/{organization_key}"
-        self.authenticate()
+        self.openai_instructions_file = openai_instructions_file
+        self.authenticate_gmail()
+        self.authenticate_openai()
 
-        # Initiate OpenAI API
-        client = OpenAI(
-            organization=self.organization_key,
-            project=self.project_key,
-            api_key = open(self.api_key, "r").read()
-        )
 
-        # completion = client.chat.completions.create(
-        # model="gpt-4o-mini", # Models: gpt-4o-mini, o1-mini, o3-mini (not yet)
-        # messages=[
-        #     {"role": "user", "content": "Write the value of 8+10, nothing else"}
-        # ]
-        # )
-
-        # print(completion.choices[0].message)
-
-    def authenticate(self):
+    def authenticate_gmail(self):
         SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
         # The file token.json stores the user's access and refresh tokens, and is
         # created automatically when the authorization flow completes for the first
@@ -56,14 +45,40 @@ class benjamail:
                 creds.refresh(Request())
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    "credentials.json", SCOPES)
+                    self.credentials_file, SCOPES)
                 creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-            with open("token.json", "w") as token_to_write:
+            with open(self.token_file, "w") as token_to_write:
                 token_to_write.write(creds.to_json())
         
         self.service = build("gmail", "v1", credentials=creds)
         return
+
+    def authenticate_openai(self):
+        # Initiate OpenAI API
+        self.client = OpenAI(
+            organization=open(self.organization_key, "r").read(),
+            project=open(self.project_key, "r").read(),
+            api_key = open(self.api_key, "r").read()
+        )
+        # Removes pre-existing assistants
+        my_assistants = self.client.beta.assistants.list(
+            order="desc",
+            limit="100",
+        )
+        for assistant in my_assistants:
+            print(assistant.id)
+            self.client.beta.assistants.delete(assistant.id)
+        
+        # Create a new assistant
+        self.assistant = self.client.beta.assistants.create(
+            instructions=open(self.openai_instructions_file, "r").read(),
+            name="Email Category Sorter",
+            model="gpt-4o-mini",
+        )
+
+        # Create a new thread
+        self.thread = self.client.beta.threads.create()
 
     def list_folders(self):
         
@@ -85,7 +100,7 @@ class benjamail:
             messages.extend(result['messages'])
         while 'nextPageToken' in result:
             page_token = result['nextPageToken']
-            result = self.service.users().messages().list(userId='me',q=query, pageToken=page_token).execute()
+            result = self.service.users().messages().list(userId='me',q=query,pageToken=page_token).execute()
             if 'messages' in result:
                 messages.extend(result['messages'])
         return messages
@@ -99,70 +114,88 @@ class benjamail:
                 return label["id"]
         return None
 
-    def load_moving_rules(self, csv_file="moving_rules.csv"):
-        try:
-            df = pd.read_csv(csv_file)
-            # Ensure only the required columns are present
-            rules = df[['Word', 'Folder']].to_dict(orient='records')
-            return rules  # Return the rules so that process_old_emails gets a valid list.
-        except Exception as e:
-            raise Exception(f"Error reading {csv_file}: {e}")
-
-    def process_old_emails(self, older_than_days=7, rules_file="moving_rules.csv"):
-        # Search for emails in the inbox older than 7 days, newer_than or older_than
+    def get_older_emails(self, older_than_days=7, batch_size=20):
+        # Search for emails in the inbox newer than {older_than_days} days.
         query = f"in:inbox newer_than:{older_than_days}d"
         messages = self.search_messages(query=query)
 
         if not messages:
-            print(f"No emails older than {older_than_days} days found.")
+            print(f"No emails newer than {older_than_days} days found.")
             return
 
-        # Get the label ID for the labelling rules
-        self.rules = self.load_moving_rules(rules_file)
+        string_batch_list = []  # This will hold the big string for each batch.
+        string_in_batch = ""    # Accumulates email content for the current batch.
+        count = 0             # Counter for messages in the current batch.
+
+        print(len(messages), "messages found.")
 
         for msg in messages:
             try:
                 # Retrieve full message details
-                message_detail = self.service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-                
-                # Extract headers to get the subject and use the snippet for additional context
-                headers = message_detail.get("payload", {}).get("headers", [])
-                subject = ""
-                for header in headers:
-                    if header["name"].lower() == "subject":
-                        subject = header["value"]
-                        break
+                message_detail = self.service.users().messages().get(
+                    userId="me", id=msg["id"], format="full"
+                ).execute()
 
-                # Combine subject and snippet for rule matching
-                email_content = subject + " " + message_detail.get("snippet", "")
+                # Extract headers for subject and sender.
+                email_content = utils.get_email_content(message_detail)
 
-                matched = False
-                for rule in self.rules:
-                    if rule["Word"] in email_content:
-                        # Retrieve the label ID for the target folder
-                        label_id = self.get_label_id(rule["Folder"])
-                        if label_id:
-                            # self.service.users().messages().modify(
-                            #     userId="me",
-                            #     id=msg["id"],
-                            #     body={
-                            #         "removeLabelIds": ["INBOX"],
-                            #         "addLabelIds": [label_id]
-                            #     }
-                            # ).execute()
-                            print(f"Moved message {msg['id']} to folder '{rule['Folder']}' because it contains '{rule['Word']}'.")
-                            matched = True
-                            break
-                        else:
-                            print(f"Label '{rule['Folder']}' not found for message {msg['id']}.")
-                if not matched:
-                    # If no rule matches, trash the email
-                    # self.service.users().messages().trash(userId="me", id=msg["id"]).execute()
-                    print(f"Trashed message {msg['id']} as no rules matched.")
+                # Append the email content to the current batch.
+                string_in_batch += email_content
+                count += 1
+
+                # When we've reached the batch size, add the giant string to the list.
+                if count % batch_size == 0:
+                    string_batch_list.append(string_in_batch)
+                    string_in_batch = ""  # Reset for the next batch.
+
             except Exception as e:
                 print(f"An error occurred processing message {msg['id']}: {e}")
 
+        # If there are leftover messages that didn't fill a full batch, add them as well.
+        if string_in_batch:
+            string_batch_list.append(string_in_batch)
+
+        self.string_list = string_batch_list
+    
+    def prompt_openai(self):
+        message = self.client.beta.threads.messages.create(
+            thread_id = self.thread.id,
+            role = "user",
+            content = self.string_list[0]
+        )
+        run = self.client.beta.threads.runs.create_and_poll(
+            thread_id=self.thread.id,
+            assistant_id=self.assistant.id
+        )
+        if run.status == "completed":
+            messages = self.client.beta.threads.messages.list(thread_id=thread.id)
+            print(messages)
+            print("messages: ")
+            for message in messages:
+                assert message.content[0].type == "text"
+                print({"role": message.role, "message": message.content[0].text.value})
+        else:
+            raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
+
 
 bm = benjamail()
-bm.process_old_emails(1)
+
 #print(bm.search_messages("hi"))
+
+# for rule in self.rules:
+#     if rule["Word"] in email_content:
+#         # Retrieve the label ID for the target folder
+#         label_id = self.get_label_id(rule["Folder"])
+#         if label_id:
+#             # self.service.users().messages().modify(
+#             #     userId="me",
+#             #     id=msg["id"],
+#             #     body={
+#             #         "removeLabelIds": ["INBOX"],
+#             #         "addLabelIds": [label_id]
+#             #     }
+#             # ).execute()
+#             print(f"Moved message {msg['id']} to folder '{rule['Folder']}' because it contains '{rule['Word']}'.")
+#             matched = True
+#             break
+#         else:
