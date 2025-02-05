@@ -1,4 +1,2 @@
-credentials.json
-token.json
-openai_key.txt
+Keys/
 test.py

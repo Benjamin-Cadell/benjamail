@@ -1,5 +1,3 @@
-#%% Imports
-
 import sys, os, re, base64, pickle, csv, pandas as pd, numpy as np
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -20,20 +18,24 @@ from mimetypes import guess_type as guess_mime_type
 
 class benjamail:
 
-    def __init__(self, credentials_file="credentials.json", token_file="token.json"):
-        self.credentials_file = credentials_file
-        self.token_file = token_file
+    def __init__(self, keys_folder="Keys", credentials_file="credentials.json", token_file="token.json",
+                 openai_key="openai_key.txt", project_key="project_key.txt", organization_key="organization_key.txt"):
+        self.credentials_file = f"{keys_folder}/{credentials_file}"
+        self.token_file = f"{keys_folder}/{token_file}"
+        self.api_key = f"{keys_folder}/{openai_key}"
+        self.project_key = f"{keys_folder}/{project_key}"
+        self.organization_key = f"{keys_folder}/{organization_key}"
         self.authenticate()
 
         # Initiate OpenAI API
         client = OpenAI(
-            organization='org-mRfLVR9f8ci7vZrNhEcNkSKG',
-            project='proj_XfkErk1r5OrMXfG6XL6YuoQ5',
-            api_key = open("openai_key.txt", "r").read()
+            organization=self.organization_key,
+            project=self.project_key,
+            api_key = open(self.api_key, "r").read()
         )
 
         # completion = client.chat.completions.create(
-        # model="gpt-4o-mini",
+        # model="gpt-4o-mini", # Models: gpt-4o-mini, o1-mini, o3-mini (not yet)
         # messages=[
         #     {"role": "user", "content": "Write the value of 8+10, nothing else"}
         # ]
@@ -41,14 +43,13 @@ class benjamail:
 
         # print(completion.choices[0].message)
 
-
     def authenticate(self):
         SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
         # The file token.json stores the user's access and refresh tokens, and is
         # created automatically when the authorization flow completes for the first
         # time.
-        if os.path.exists("token.json"):
-            creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+        if os.path.exists(self.token_file):
+            creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
         # If there are no (valid) credentials available, let the user log in.
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -58,8 +59,8 @@ class benjamail:
                     "credentials.json", SCOPES)
                 creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-            with open("token.json", "w") as token:
-                token.write(creds.to_json())
+            with open("token.json", "w") as token_to_write:
+                token_to_write.write(creds.to_json())
         
         self.service = build("gmail", "v1", credentials=creds)
         return
