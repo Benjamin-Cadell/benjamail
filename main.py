@@ -157,25 +157,33 @@ class benjamail:
 
         self.string_list = string_batch_list
     
-    def prompt_openai(self):
+    def prompt_openai(self, message):
         message = self.client.beta.threads.messages.create(
             thread_id = self.thread.id,
             role = "user",
-            content = self.string_list[0]
+            content = message
         )
         run = self.client.beta.threads.runs.create_and_poll(
             thread_id=self.thread.id,
             assistant_id=self.assistant.id
         )
         if run.status == "completed":
-            messages = self.client.beta.threads.messages.list(thread_id=thread.id)
-            print(messages)
-            print("messages: ")
-            for message in messages:
-                assert message.content[0].type == "text"
-                print({"role": message.role, "message": message.content[0].text.value})
+            messages = self.client.beta.threads.messages.list(thread_id=self.thread.id)
+            first_message = messages[0]
+            assert first_message.content[0].type == "text"
+            response = first_message.content[0].text.value
+            return response
         else:
             raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
+        
+    def manage_emails(self):
+        # Get string_list
+        self.get_older_emails()
+
+        # Iterate through the string_list
+        for string in self.string_list:
+            response = self.prompt_openai(string)
+            print(response)
 
 
 bm = benjamail()
