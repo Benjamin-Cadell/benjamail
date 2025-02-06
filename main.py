@@ -1,9 +1,10 @@
 #%%
 import sys, os, re, csv, pandas as pd, numpy as np, utils, time
+from tqdm import tqdm
+from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from openai import OpenAI
-import os.path
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -12,17 +13,17 @@ class benjamail:
 
     def __init__(self, keys_folder="Keys", credentials_file="credentials.json", token_file="token.json",
                  openai_key="openai_key.txt", project_key="project_key.txt", organization_key="organization_key.txt",
-                 openai_instructions_file="instructions.txt"):
+                 openai_instructions_file="instructions.txt", labels_file="labels.txt", examples_file="examples.txt"):
+        
         self.credentials_file = f"{keys_folder}/{credentials_file}"
         self.token_file = f"{keys_folder}/{token_file}"
         self.api_key = f"{keys_folder}/{openai_key}"
         self.project_key = f"{keys_folder}/{project_key}"
         self.organization_key = f"{keys_folder}/{organization_key}"
         self.openai_instructions_file = openai_instructions_file
-        self.labels_string = open("Labels.txt", "r").read()
-        self.examples_string = open("examples.txt", "r").read()
+        self.labels_string = open(labels_file, "r").read()
+        self.examples_string = open(examples_file, "r").read()
         self.authenticate_gmail()
-        self.authenticate_openai()
 
     def authenticate_gmail(self):
         SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
@@ -46,7 +47,7 @@ class benjamail:
         self.service = build("gmail", "v1", credentials=creds)
         return
 
-    def authenticate_openai(self):
+    def authenticate_openai(self, model, assistant):
         # Initiate OpenAI API
         self.client = OpenAI(
             organization=open(self.organization_key, "r").read(),
@@ -68,14 +69,23 @@ class benjamail:
         with open(self.openai_instructions_file, "r") as f:
             instructions = f.read()
         formatted_instructions = instructions.format(labels=self.labels_string, examples=self.examples_string)
-        self.assistant = self.client.beta.assistants.create(
-            instructions=formatted_instructions,
-            name="Email Category Sorter",
-            model="gpt-4o-mini",
-        )
+
+        if assistant:
+            self.assistant = self.client.beta.assistants.create(
+                instructions=formatted_instructions,
+                name="Email Category Sorter",
+                model=model,
+            )
 
         # Create a new thread
         self.thread = self.client.beta.threads.create()
+
+        if not assistant:
+            self.client.beta.threads.messages.create(
+                thread_id = self.thread.id,
+                role = "developer",
+                content = instructions
+            )
 
     def list_folders(self):
         
@@ -100,7 +110,10 @@ class benjamail:
             result = self.service.users().messages().list(userId='me',q=query,pageToken=page_token).execute()
             if 'messages' in result:
                 messages.extend(result['messages'])
-        self.messages = messages
+        
+        if self.max_emails > len(messages):
+            self.max_emails = len(messages)
+        self.messages = messages[:self.max_emails]
 
     def get_label_id(self, label_name):
         """Returns the label ID for a given label name."""
@@ -109,7 +122,43 @@ class benjamail:
         for label in labels:
             if label["name"].lower() == label_name.lower():
                 return label["id"]
-        return None
+        raise Exception(f"{label_name} doesnt exist")
+
+    def move_messages(self, test):
+        
+        if len(self.messages) != len(self.full_responses):
+            raise Exception(f"Messages and results length do not match\n"
+                            f"Msgs: {len(self.messages)}\nResults: {len(self.full_responses)}")
+
+        if not test:
+            for i, msg in enumerate(self.messages):
+
+                # Special case for bin
+                if self.full_responses[i] == "Bin":
+                    self.service.users().messages().trash(userId="me", id=msg["id"]).execute()
+
+                else:
+                    # Get label id for gmail API
+                    label_id = self.get_label_id(self.full_responses[i])
+                    
+                    # Move the message to correct folder
+                    self.service.users().messages().modify(
+                        userId="me",
+                        id=msg["id"],
+                        body={
+                            "removeLabelIds": ["INBOX"],
+                            "addLabelIds": [label_id]
+                        }
+                    ).execute()
+        
+        # Log movements for potential later analysis
+        df = {
+            "AI Response": self.full_responses,
+            "Content": self.string_list, 
+        }
+        df = pd.DataFrame(df)
+        time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        df.to_csv(f"Logs/log-{time}.csv", index=True)
 
     def get_older_emails(self, older_than_days, newer_than_days, batch_size):
         # Search for emails in the inbox newer than {older_than_days} days.
@@ -125,12 +174,13 @@ class benjamail:
         self.search_messages(query=query)
 
         if not self.messages:
-            print(f"No emails newer than {older_than_days} days found.")
+            print(f"No emails older than {older_than_days} days found.")
             return
 
         string_batch_list = []  # This will hold the big string for each batch.
         string_in_batch = ""    # Accumulates email content for the current batch.
         count = 0             # Counter for messages in the current batch.
+        string_list = []        # List of all email content strings, similar to string_batch_list, but only single messages.
 
         print(len(self.messages), "messages found.")
         for msg in self.messages:
@@ -145,6 +195,8 @@ class benjamail:
 
                 # Append the email content to the current batch.
                 string_in_batch += email_content
+                string_list.append(email_content)
+
                 count += 1
 
                 # When we've reached the batch size, add the giant string to the list.
@@ -159,8 +211,9 @@ class benjamail:
         if string_in_batch:
             string_batch_list.append(string_in_batch)
 
-        self.string_list = string_batch_list
-    
+        self.batch_string_list = string_batch_list
+        self.string_list = string_list
+
     def prompt_openai(self, message):
         message = self.client.beta.threads.messages.create(
             thread_id = self.thread.id,
@@ -180,20 +233,39 @@ class benjamail:
         else:
             raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
         
-    def manage_emails(self, older_than_days=None, newer_than_days=7, batch_size=20):
-        # Get string_list
+    def sort_emails(self, older_than_days=30, newer_than_days=None, batch_size=None, test=False, model="gpt-4o-mini",
+                    assistant=True, max_emails=100):
+        
+        self.max_emails = max_emails
+
+        # Authenticate OpenAI
+        if model not in ["gpt-4o-mini", "o1-mini", "o3-mini"]:
+            raise Exception(f"Invalid model: {model}")
+        self.authenticate_openai(model, assistant)
+
+        if model == "gpt-4o-mini":
+            batch_size = 10
+        else:
+            batch_size = 30
+
+        # Get string_list and batch_string_list
         self.get_older_emails(older_than_days, newer_than_days, batch_size)
-        # Iterate through the string_list
+
+        # Iterate through the batch_string_list
         self.full_responses = []
-        for string in self.string_list:
+        for string in tqdm(self.batch_string_list):
             response = self.prompt_openai(string)
             response_list = response.split(",")
             self.full_responses += response_list
-        
+        # Move emails based off labels
+        self.move_messages(test)
 
 
 bm = benjamail()
-bm.manage_emails()
+bm.sort_emails(test=True,
+               # model="o1-mini",
+               max_emails = 30,
+               )
 
 #print(bm.search_messages("hi"))
 
