@@ -20,13 +20,15 @@ for the separation of categories, here is an example:
 
 Input: [Message 1 contents about finances], [Message 2 content about work], [Message 3 content about Energy]
 
-Your Output: Finances,Work,Energy
+Your Output: Finances,Work,Energy,
+
+(Note the comma at the end is important)
 
 The list of categories are:
 
-{labels}
+?,Trash,{labels}
 
-Note that the work categories encompasses all academic work from my university, my PhD applications, and any other work stuff.
+Note that the "Work" category encompasses all academic work from my university, my PhD applications, which should go in "Work".
 
 The following is the constantly updating list of examples and counterexamples which you may have gotten wrong in the past
 which may help you do better in the future:

@@ -1,5 +1,5 @@
 #%%
-import sys, os, re, base64, pickle, csv, pandas as pd, numpy as np, utils
+import sys, os, re, csv, pandas as pd, numpy as np, utils, time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from openai import OpenAI
@@ -7,15 +7,6 @@ import os.path
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.errors import HttpError
-from base64 import urlsafe_b64decode, urlsafe_b64encode
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
-from email.mime.audio import MIMEAudio
-from email.mime.base import MIMEBase
-from mimetypes import guess_type as guess_mime_type
-
 
 class benjamail:
 
@@ -28,9 +19,10 @@ class benjamail:
         self.project_key = f"{keys_folder}/{project_key}"
         self.organization_key = f"{keys_folder}/{organization_key}"
         self.openai_instructions_file = openai_instructions_file
+        self.labels_string = open("Labels.txt", "r").read()
+        self.examples_string = open("examples.txt", "r").read()
         self.authenticate_gmail()
         self.authenticate_openai()
-
 
     def authenticate_gmail(self):
         SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
@@ -66,13 +58,18 @@ class benjamail:
             order="desc",
             limit="100",
         )
-        for assistant in my_assistants:
-            print(assistant.id)
-            self.client.beta.assistants.delete(assistant.id)
-        
+        try:
+            for assistant in my_assistants:
+                self.client.beta.assistants.delete(assistant.id)
+        except:
+            pass  # This may look bad, but it's OpenAI's fault
+
         # Create a new assistant
+        with open(self.openai_instructions_file, "r") as f:
+            instructions = f.read()
+        formatted_instructions = instructions.format(labels=self.labels_string, examples=self.examples_string)
         self.assistant = self.client.beta.assistants.create(
-            instructions=open(self.openai_instructions_file, "r").read(),
+            instructions=formatted_instructions,
             name="Email Category Sorter",
             model="gpt-4o-mini",
         )
@@ -103,7 +100,7 @@ class benjamail:
             result = self.service.users().messages().list(userId='me',q=query,pageToken=page_token).execute()
             if 'messages' in result:
                 messages.extend(result['messages'])
-        return messages
+        self.messages = messages
 
     def get_label_id(self, label_name):
         """Returns the label ID for a given label name."""
@@ -114,12 +111,20 @@ class benjamail:
                 return label["id"]
         return None
 
-    def get_older_emails(self, older_than_days=7, batch_size=20):
+    def get_older_emails(self, older_than_days, newer_than_days, batch_size):
         # Search for emails in the inbox newer than {older_than_days} days.
-        query = f"in:inbox newer_than:{older_than_days}d"
-        messages = self.search_messages(query=query)
+        if newer_than_days and older_than_days:
+            print("Both newer than and older than requests activated")
+            time.sleep(5)
+        if older_than_days:
+            query = f"in:inbox older_than:{older_than_days}d"
+        if newer_than_days:  # Newer that search request overrides older than request for safety
+            query = f"in:inbox newer_than:{newer_than_days}d"
 
-        if not messages:
+        # Get self.messages
+        self.search_messages(query=query)
+
+        if not self.messages:
             print(f"No emails newer than {older_than_days} days found.")
             return
 
@@ -127,9 +132,8 @@ class benjamail:
         string_in_batch = ""    # Accumulates email content for the current batch.
         count = 0             # Counter for messages in the current batch.
 
-        print(len(messages), "messages found.")
-
-        for msg in messages:
+        print(len(self.messages), "messages found.")
+        for msg in self.messages:
             try:
                 # Retrieve full message details
                 message_detail = self.service.users().messages().get(
@@ -149,7 +153,7 @@ class benjamail:
                     string_in_batch = ""  # Reset for the next batch.
 
             except Exception as e:
-                print(f"An error occurred processing message {msg['id']}: {e}")
+                raise Exception(f"An error occurred processing message {msg['id']}: {e}")
 
         # If there are leftover messages that didn't fill a full batch, add them as well.
         if string_in_batch:
@@ -169,24 +173,27 @@ class benjamail:
         )
         if run.status == "completed":
             messages = self.client.beta.threads.messages.list(thread_id=self.thread.id)
-            first_message = messages[0]
+            first_message = messages.data[0]
             assert first_message.content[0].type == "text"
             response = first_message.content[0].text.value
             return response
         else:
             raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
         
-    def manage_emails(self):
+    def manage_emails(self, older_than_days=None, newer_than_days=7, batch_size=20):
         # Get string_list
-        self.get_older_emails()
-
+        self.get_older_emails(older_than_days, newer_than_days, batch_size)
         # Iterate through the string_list
+        self.full_responses = []
         for string in self.string_list:
             response = self.prompt_openai(string)
-            print(response)
+            response_list = response.split(",")
+            self.full_responses += response_list
+        
 
 
 bm = benjamail()
+bm.manage_emails()
 
 #print(bm.search_messages("hi"))
 
