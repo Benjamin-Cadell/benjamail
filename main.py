@@ -47,7 +47,7 @@ class benjamail:
         self.service = build("gmail", "v1", credentials=creds)
         return
 
-    def authenticate_openai(self, model, assistant):
+    def authenticate_openai(self, model):
         # Initiate OpenAI API
         self.client = OpenAI(
             organization=open(self.organization_key, "r").read(),
@@ -65,26 +65,27 @@ class benjamail:
         except:
             pass  # This may look bad, but it's OpenAI's fault
 
-        # Create a new assistant
+        # Read instructions from file
         with open(self.openai_instructions_file, "r") as f:
             instructions = f.read()
         formatted_instructions = instructions.format(labels=self.labels_string, examples=self.examples_string)
+        self.formatted_instructions = formatted_instructions
 
-        if assistant:
-            self.assistant = self.client.beta.assistants.create(
+        # Create a new assistan
+        if self.assistant:
+            assistant = self.client.beta.assistants.create(
                 instructions=formatted_instructions,
                 name="Email Category Sorter",
                 model=model,
             )
 
-        # Create a new thread
-        self.thread = self.client.beta.threads.create()
+            # Create a new thread for the assisstant
+            self.thread = self.client.beta.threads.create()
 
-        if not assistant:
             self.client.beta.threads.messages.create(
                 thread_id = self.thread.id,
                 role = "developer",
-                content = instructions
+                content = self.formatted_instructions
             )
 
     def list_folders(self):
@@ -215,34 +216,52 @@ class benjamail:
         self.string_list = string_list
 
     def prompt_openai(self, message):
-        message = self.client.beta.threads.messages.create(
-            thread_id = self.thread.id,
-            role = "user",
-            content = message
-        )
-        run = self.client.beta.threads.runs.create_and_poll(
-            thread_id=self.thread.id,
-            assistant_id=self.assistant.id
-        )
-        if run.status == "completed":
-            messages = self.client.beta.threads.messages.list(thread_id=self.thread.id)
-            first_message = messages.data[0]
-            assert first_message.content[0].type == "text"
-            response = first_message.content[0].text.value
-            return response
+        if self.assistant:
+            thread_message = self.client.beta.threads.messages.create(
+                thread_id = self.thread.id,
+                role = "user",
+                content = message
+            )
+            run = self.client.beta.threads.runs.create_and_poll(
+                thread_id=self.thread.id,
+                assistant_id=self.assistant.id
+            )
+            if run.status == "completed":
+                messages = self.client.beta.threads.messages.list(thread_id=self.thread.id)
+                first_message = messages.data[0]
+                assert first_message.content[0].type == "text"
+                response = first_message.content[0].text.value
+                return response
+            else:
+                raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
         else:
-            raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "developer", "content": self.formatted_instructions},
+                    {"role": "user",   "content": message}
+                ]
+                )
+            response = completion.choices[0].message.content[0].text.value
+            print(response)
+        return response
         
     def sort_emails(self, older_than_days=30, newer_than_days=None, batch_size=None, test=False, model="gpt-4o-mini",
-                    assistant=True, max_emails=100):
-        
-        self.max_emails = max_emails
+                    max_emails=100):
 
         # Authenticate OpenAI
         if model not in ["gpt-4o-mini", "o1-mini", "o3-mini"]:
             raise Exception(f"Invalid model: {model}")
-        self.authenticate_openai(model, assistant)
+        if model == "gpt-4o-mini":
+            self.assistant = True
+        else:
+            self.assistant = False
+        
+        self.max_emails = max_emails
+        self.model = model
+        self.authenticate_openai(model)
 
+        
         if model == "gpt-4o-mini":
             batch_size = 10
         else:
@@ -263,8 +282,8 @@ class benjamail:
 
 bm = benjamail()
 bm.sort_emails(test=True,
-               # model="o1-mini",
-               max_emails = 30,
+               model="o1-mini",
+               max_emails = 5,
                )
 
 #print(bm.search_messages("hi"))
