@@ -17,12 +17,14 @@ If you are unsure between two folders, or think they are somewhere in the middle
 Anything else, its better to put something in the "?" than in the "Bin" if you're not certain.
 
 Your response should be a single string, with comma seperated values of which folder the message belongs to in the
-respective order of the response. You should not put quotations marks "", the only punctuation is the comma
+respective order of the response. You should not put quotations marks "" or space bars, the only punctuation is the comma
 for the separation of categories, here is an example:
 
 Input: [Message 1 contents about finances], [Message 2 content about work], [Message 3 content about Energy]
 
 Your Output: Finances,Work,Energy
+
+There should be NOTHING else in the output, apart from the result.
 
 The list of categories are:
 

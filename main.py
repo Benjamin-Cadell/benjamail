@@ -13,16 +13,23 @@ class benjamail:
 
     def __init__(self, keys_folder="Keys", credentials_file="credentials.json", token_file="token.json",
                  openai_key="openai_key.txt", project_key="project_key.txt", organization_key="organization_key.txt",
-                 openai_instructions_file="instructions.txt", labels_file="labels.txt", examples_file="examples.txt"):
+                 openai_instructions_file="instructions.txt", labels_file="labels.txt", examples_file="examples.txt",
+                 openrouter_key="openrouter_key.txt"):
         
         self.credentials_file = f"{keys_folder}/{credentials_file}"
         self.token_file = f"{keys_folder}/{token_file}"
         self.api_key = f"{keys_folder}/{openai_key}"
         self.project_key = f"{keys_folder}/{project_key}"
         self.organization_key = f"{keys_folder}/{organization_key}"
+        self.openrouter_key = f"{keys_folder}/{openrouter_key}"
         self.openai_instructions_file = openai_instructions_file
         self.labels_string = open(labels_file, "r").read()
         self.examples_string = open(examples_file, "r").read()
+        
+        self.openai_models = ["gpt-4o-mini", "o1-mini"]
+        self.openrouter_models = ["deepseek/deepseek-r1:free", "openai/o3-mini"]
+        self.assistant_models = ["gpt-4o-mini"] # Assistant models must be in self.openai_models
+
         self.authenticate_gmail()
 
     def authenticate_gmail(self):
@@ -47,23 +54,31 @@ class benjamail:
         self.service = build("gmail", "v1", credentials=creds)
         return
 
-    def authenticate_openai(self, model):
-        # Initiate OpenAI API
-        self.client = OpenAI(
-            organization=open(self.organization_key, "r").read(),
-            project=open(self.project_key, "r").read(),
-            api_key = open(self.api_key, "r").read()
-        )
-        # Removes pre-existing assistants
-        my_assistants = self.client.beta.assistants.list(
-            order="desc",
-            limit="100",
-        )
-        try:
-            for assistant in my_assistants:
-                self.client.beta.assistants.delete(assistant.id)
-        except:
-            pass  # This may look bad, but it's OpenAI's fault
+    def authenticate_client(self, model):
+        # Initiate OpenAI API based on model
+        if model in self.openai_models:
+            self.client = OpenAI(
+                organization=open(self.organization_key, "r").read(),
+                project=open(self.project_key, "r").read(),
+                api_key = open(self.api_key, "r").read()
+            )
+            # Removes pre-existing assistants
+            my_assistants = self.client.beta.assistants.list(
+                order="desc",
+                limit="100",
+            )
+            try:
+                for assistant in my_assistants:
+                    self.client.beta.assistants.delete(assistant.id)
+            except:
+                pass  # This may look bad, but it's OpenAI's fault
+        elif model in self.openrouter_models:
+            self.client = OpenAI(
+                base_url = "https://openrouter.ai/api/v1",
+                api_key  = open(self.openrouter_key, "r").read()
+            )
+        else:
+            raise Exception(f"Invalid model: {model}")
 
         # Read instructions from file
         with open(self.openai_instructions_file, "r") as f:
@@ -158,7 +173,7 @@ class benjamail:
             "Content": self.string_list, 
         }
         df = pd.DataFrame(df)
-        time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         df.to_csv(f"Logs/log-{time}.csv", index=True)
 
     def get_older_emails(self, older_than_days, newer_than_days, batch_size):
@@ -235,31 +250,42 @@ class benjamail:
             else:
                 raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
         else:
+            if self.model == "deepseek/deepseek-r1:free":
+                kwargs = {"temperature": 0.05}
+            if self.model == "o3-mini":
+                kwargs = {"reasoning_effort": "low"}
             completion = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "developer", "content": self.formatted_instructions},
-                    {"role": "user",   "content": message}
-                ]
+                    {"role": "user", "content": self.formatted_instructions},
+                    {"role": "user", "content": message}
+                ],
+                **kwargs,
                 )
-            response = completion.choices[0].message.content[0].text.value
-            print(response)
+            response = completion.choices[0].message.content
+        if re.search(r"[.;:!?]", response):
+            raise Exception(f"Response contains punctuation, this should not happen: {response}")
+        print(response)
         return response
         
-    def sort_emails(self, older_than_days=30, newer_than_days=None, batch_size=None, test=False, model="gpt-4o-mini",
+    def sort_emails(self, older_than_days=60, newer_than_days=None, batch_size=None, test=False, model="gpt-4o-mini",
                     max_emails=100):
 
-        # Authenticate OpenAI
-        if model not in ["gpt-4o-mini", "o1-mini", "o3-mini"]:
+        if model == "o3-mini":
+            model = "openai/o3-mini"
+        if model == "deepseek":
+            model = "deepseek/deepseek-r1:free"
+
+        # Authenticate AI client
+        if model not in self.openai_models and model not in self.openrouter_models:
             raise Exception(f"Invalid model: {model}")
-        if model == "gpt-4o-mini":
+        if model in self.assistant_models:
             self.assistant = True
         else:
             self.assistant = False
-        
         self.max_emails = max_emails
         self.model = model
-        self.authenticate_openai(model)
+        self.authenticate_client(model)
 
         
         if model == "gpt-4o-mini":
@@ -283,7 +309,7 @@ class benjamail:
 bm = benjamail()
 bm.sort_emails(test=True,
                model="o1-mini",
-               max_emails = 5,
+               max_emails = 30,
                )
 
 #print(bm.search_messages("hi"))
