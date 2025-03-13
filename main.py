@@ -1,5 +1,5 @@
 #%%
-import sys, os, re, csv, pandas as pd, numpy as np, utils, time
+import sys, os, re, csv, pandas as pd, numpy as np, utils, time, json
 from tqdm import tqdm
 from datetime import datetime
 from google.oauth2 import service_account
@@ -26,10 +26,10 @@ class benjamail:
         self.labels_string = open(labels_file, "r").read()
         self.examples_string = open(examples_file, "r").read()
         
-        self.openai_models = ["gpt-4o-mini", "o1-mini"]
-        self.openrouter_models = ["deepseek/deepseek-r1:free", "openai/o3-mini"]
-        self.assistant_models = ["gpt-4o-mini"] # Assistant models must be in self.openai_models
-
+        self.openai_models = ["gpt-4o-mini", "o1-mini", "o3-mini"]
+        self.openrouter_models = ["deepseek/deepseek-r1:free"]
+        # self.assistant_models = ["gpt-4o-mini", "o3-mini"] # Assistant models must be in self.openai_models
+        self.assistant = False
         self.authenticate_gmail()
 
     def authenticate_gmail(self):
@@ -62,16 +62,18 @@ class benjamail:
                 project=open(self.project_key, "r").read(),
                 api_key = open(self.api_key, "r").read()
             )
+
             # Removes pre-existing assistants
-            my_assistants = self.client.beta.assistants.list(
-                order="desc",
-                limit="100",
-            )
-            try:
-                for assistant in my_assistants:
-                    self.client.beta.assistants.delete(assistant.id)
-            except:
-                pass  # This may look bad, but it's OpenAI's fault
+            # my_assistants = self.client.beta.assistants.list(
+            #     order="desc",
+            #     limit="100",
+            # )
+            # try:
+            #     for assistant in my_assistants:
+            #         self.client.beta.assistants.delete(assistant.id)
+            # except:
+            #     pass  # This may look bad, but it's OpenAI's fault
+
         elif model in self.openrouter_models:
             self.client = OpenAI(
                 base_url = "https://openrouter.ai/api/v1",
@@ -86,22 +88,22 @@ class benjamail:
         formatted_instructions = instructions.format(labels=self.labels_string, examples=self.examples_string)
         self.formatted_instructions = formatted_instructions
 
-        # Create a new assistan
-        if self.assistant:
-            assistant = self.client.beta.assistants.create(
-                instructions=formatted_instructions,
-                name="Email Category Sorter",
-                model=model,
-            )
+        # Create a new assistant
+        # if self.assistant:
+        #     assistant = self.client.beta.assistants.create(
+        #         instructions=formatted_instructions,
+        #         name="Email Category Sorter",
+        #         model=model,
+        #     )
 
-            # Create a new thread for the assisstant
-            self.thread = self.client.beta.threads.create()
+        #     # Create a new thread for the assisstant
+        #     self.thread = self.client.beta.threads.create()
 
-            self.client.beta.threads.messages.create(
-                thread_id = self.thread.id,
-                role = "developer",
-                content = self.formatted_instructions
-            )
+        #     self.client.beta.threads.messages.create(
+        #         thread_id = self.thread.id,
+        #         role = "developer",
+        #         content = self.formatted_instructions
+        #     )
 
     def list_folders(self):
         
@@ -127,9 +129,16 @@ class benjamail:
             if 'messages' in result:
                 messages.extend(result['messages'])
         
-        if self.max_emails > len(messages):
-            self.max_emails = len(messages)
-        self.messages = messages[:self.max_emails]
+        filtered_messages = []
+        for msg in messages:
+            message = self.service.users().messages().get(userId="me", id=msg["id"], format="metadata", metadataHeaders=["labels"]).execute()
+            # If the message is not starred, add it to the filtered list
+            if "STARRED" not in message.get("labelIds", []):
+                filtered_messages.append(msg)
+
+        if self.max_emails > len(filtered_messages):
+            self.max_emails = len(filtered_messages)
+        self.messages = filtered_messages[:self.max_emails]
 
     def get_label_id(self, label_name):
         """Returns the label ID for a given label name."""
@@ -166,7 +175,7 @@ class benjamail:
                             "addLabelIds": [label_id]
                         }
                     ).execute()
-        
+
         # Log movements for potential later analysis
         df = {
             "AI Response": self.full_responses,
@@ -179,10 +188,10 @@ class benjamail:
     def get_older_emails(self, older_than_days, newer_than_days, batch_size):
         # Search for emails in the inbox newer than {older_than_days} days.
         if newer_than_days and older_than_days:
-            print("Both newer than and older than requests activated")
+            print("Both newer than and older than requests activated, overriding to newer than request.")
             time.sleep(5)
         if older_than_days:
-            query = f"in:inbox older_than:{older_than_days}d"
+            query = f"in:inbox older_than:{older_than_days}d" # TODO: This needs work, same with newer than, https://developers.google.com/gmail/api/guides/filtering
         if newer_than_days:  # Newer that search request overrides older than request for safety
             query = f"in:inbox newer_than:{newer_than_days}d"
 
@@ -199,7 +208,7 @@ class benjamail:
         string_list = []        # List of all email content strings, similar to string_batch_list, but only single messages.
 
         print(len(self.messages), "messages found.")
-        for msg in self.messages:
+        for i, msg in enumerate(self.messages):
             try:
                 # Retrieve full message details
                 message_detail = self.service.users().messages().get(
@@ -207,7 +216,7 @@ class benjamail:
                 ).execute()
 
                 # Extract headers for subject and sender.
-                email_content = utils.get_email_content(message_detail)
+                email_content = utils.get_email_content(message_detail, i+1)
 
                 # Append the email content to the current batch.
                 string_in_batch += email_content
@@ -231,86 +240,114 @@ class benjamail:
         self.string_list = string_list
 
     def prompt_openai(self, message):
-        if self.assistant:
-            thread_message = self.client.beta.threads.messages.create(
-                thread_id = self.thread.id,
-                role = "user",
-                content = message
+        # if self.assistant:
+        #     thread_message = self.client.beta.threads.messages.create(
+        #         thread_id = self.thread.id,
+        #         role = "user",
+        #         content = message
+        #     )
+        #     run = self.client.beta.threads.runs.create_and_poll(
+        #         thread_id=self.thread.id,
+        #         assistant_id=self.assistant.id
+        #     )
+        #     if run.status == "completed":
+        #         messages = self.client.beta.threads.messages.list(thread_id=self.thread.id)
+        #         first_message = messages.data[0]
+        #         assert first_message.content[0].type == "text"
+        #         response = first_message.content[0].text.value
+        #         return response
+        #     else:
+        #         raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
+        # else:
+        if self.model == "deepseek/deepseek-r1:free":
+            kwargs = {"temperature": 0.05}
+        if self.model == "o3-mini":
+            kwargs = dict(
+                reasoning = {"effort": "high"},
+                temperature = 0.5,
+                text = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "folder_results",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "folder": {
+                                    "type": "string"
+                                },
+                            },
+                            "required": ["index", "folder"],
+                            "additionalProperties": False  # So that it cant create extra keys
+                        },
+                        "strict": True
+                    }
+                },
             )
-            run = self.client.beta.threads.runs.create_and_poll(
-                thread_id=self.thread.id,
-                assistant_id=self.assistant.id
-            )
-            if run.status == "completed":
-                messages = self.client.beta.threads.messages.list(thread_id=self.thread.id)
-                first_message = messages.data[0]
-                assert first_message.content[0].type == "text"
-                response = first_message.content[0].text.value
-                return response
-            else:
-                raise Exception(f"Assistant run did not complete successfully. Status: {run.status}")
-        else:
-            if self.model == "deepseek/deepseek-r1:free":
-                kwargs = {"temperature": 0.05}
-            if self.model == "o3-mini":
-                kwargs = {"reasoning_effort": "low"}
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "user", "content": self.formatted_instructions},
-                    {"role": "user", "content": message}
-                ],
-                **kwargs,
-                )
-            response = completion.choices[0].message.content
-        if re.search(r"[.;:!?]", response):
-            raise Exception(f"Response contains punctuation, this should not happen: {response}")
-        print(response)
+
+        response = self.client.responses.create(
+            model = self.model,
+            input = message,
+            instructions = self.formatted_instructions,
+            **kwargs,
+        )
+        folder_results = json.loads(response.output_text)
+        print(folder_results)
+        sys.exit()
+        # End else statement (commented for assistants)
+
+        # if re.search(r"[.;:!?]", response):
+        #     raise Exception(f"Response contains punctuation, this should not happen: {response}")
+        # print(response)
         return response
         
-    def sort_emails(self, older_than_days=60, newer_than_days=None, batch_size=None, test=False, model="gpt-4o-mini",
-                    max_emails=100):
+    def sort_emails(self, older_than_days=14, newer_than_days=None, nemails=None, batch_size=30, test=False, model="gpt-4o-mini",
+                    max_emails=100, run_client=True):
 
-        if model == "o3-mini":
-            model = "openai/o3-mini"
         if model == "deepseek":
             model = "deepseek/deepseek-r1:free"
 
         # Authenticate AI client
         if model not in self.openai_models and model not in self.openrouter_models:
             raise Exception(f"Invalid model: {model}")
-        if model in self.assistant_models:
-            self.assistant = True
-        else:
-            self.assistant = False
+        # if model in self.assistant_models:
+        #     self.assistant = True
+        # else:
+        #     self.assistant = False
         self.max_emails = max_emails
         self.model = model
         self.authenticate_client(model)
 
-        
         if model == "gpt-4o-mini":
             batch_size = 10
-        else:
-            batch_size = 30
 
         # Get string_list and batch_string_list
         self.get_older_emails(older_than_days, newer_than_days, batch_size)
 
-        # Iterate through the batch_string_list
-        self.full_responses = []
-        for string in tqdm(self.batch_string_list):
-            response = self.prompt_openai(string)
-            response_list = response.split(",")
-            self.full_responses += response_list
-        # Move emails based off labels
-        self.move_messages(test)
+        if run_client:
+            # Iterate through the batch_string_list
+            self.full_responses = []
+            for string in tqdm(self.batch_string_list):
+                response = self.prompt_openai(string)
+                response_list = response.split(",")
+                self.full_responses += response_list
+            # Move emails based off labels
+            self.move_messages(test)
+
+if __name__ == "__main__":
+    bm = benjamail()
+    bm.sort_emails(
+        newer_than_days = 14,
+        test            = True,
+        model           = "o3-mini",
+        max_emails      = 5,
+        run_client      = False
+    )
 
 
-bm = benjamail()
-bm.sort_emails(test=True,
-               model="o1-mini",
-               max_emails = 30,
-               )
+#%%
+
+# for string in bm.string_list:
+#     print(string)
 
 #print(bm.search_messages("hi"))
 

@@ -1,6 +1,6 @@
 
 
-def get_email_content(message_detail):
+def get_email_content(message_detail, idx):
     """ Extracts email content from a message detail object. """
     headers = message_detail.get("payload", {}).get("headers", [])
     subject = ""
@@ -14,7 +14,7 @@ def get_email_content(message_detail):
 
     # Combine sender, subject, and snippet for rule matching.
     email_content = (
-        f"[NEXT MESSAGE] Sender: {sender}, Subject: {subject}, "
-        f"Message: {message_detail.get('snippet', '')} [END MESSAGE]"
+        f"[MSG {idx}] Sender: {sender}, Subject: {subject}, "
+        f"Message: {message_detail.get('snippet', '')} [END]\n"
     )
     return email_content
