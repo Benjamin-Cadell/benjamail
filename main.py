@@ -14,22 +14,22 @@ class benjamail:
     def __init__(self, keys_folder="Keys", credentials_file="credentials.json", token_file="token.json",
                  openai_key="openai_key.txt", project_key="project_key.txt", organization_key="organization_key.txt",
                  openai_instructions_file="instructions.txt", labels_file="labels.txt", examples_file="examples.txt",
-                 openrouter_key="openrouter_key.txt"):
+                 openrouter_key="openrouter_key.txt", verbose=True):
         
-        self.credentials_file = f"{keys_folder}/{credentials_file}"
-        self.token_file = f"{keys_folder}/{token_file}"
-        self.api_key = f"{keys_folder}/{openai_key}"
-        self.project_key = f"{keys_folder}/{project_key}"
-        self.organization_key = f"{keys_folder}/{organization_key}"
-        self.openrouter_key = f"{keys_folder}/{openrouter_key}"
+        self.credentials_file         = f"{keys_folder}/{credentials_file}"
+        self.token_file               = f"{keys_folder}/{token_file}"
+        self.api_key                  = f"{keys_folder}/{openai_key}"
+        self.project_key              = f"{keys_folder}/{project_key}"
+        self.organization_key         = f"{keys_folder}/{organization_key}"
+        self.openrouter_key           = f"{keys_folder}/{openrouter_key}"
         self.openai_instructions_file = openai_instructions_file
-        self.labels_string = open(labels_file, "r").read()
-        self.examples_string = open(examples_file, "r").read()
-        
-        self.openai_models = ["gpt-4o-mini", "o1-mini", "o3-mini"]
-        self.openrouter_models = ["deepseek/deepseek-r1:free"]
+        self.labels_string            = open(labels_file, "r").read()
+        self.examples_string          = open(examples_file, "r").read()
+        self.verbose                  = verbose
+        self.openai_models            = ["gpt-4o-mini", "o1-mini", "o3-mini"]
+        self.openrouter_models        = ["deepseek/deepseek-r1:free"]
+        self.assistant                = False
         # self.assistant_models = ["gpt-4o-mini", "o3-mini"] # Assistant models must be in self.openai_models
-        self.assistant = False
         self.authenticate_gmail()
 
     def authenticate_gmail(self):
@@ -119,18 +119,23 @@ class benjamail:
             print(label["name"])
 
     def search_messages(self, query):
-        result = self.service.users().messages().list(userId='me',q=query).execute()
+        result = self.service.users().messages().list(userId='me', q=query, maxResults=self.max_emails).execute()
         messages = []
         if 'messages' in result:
             messages.extend(result['messages'])
-        while 'nextPageToken' in result:
+        while 'nextPageToken' in result and len(messages) < self.max_emails:
             page_token = result['nextPageToken']
-            result = self.service.users().messages().list(userId='me',q=query,pageToken=page_token).execute()
+            result = self.service.users().messages().list(userId='me', q=query, pageToken=page_token,
+                                                          maxResults=self.max_emails).execute()
             if 'messages' in result:
                 messages.extend(result['messages'])
-        
+
+        if self.verbose:
+            iterable = tqdm(messages, desc="Removing starred messages")
+        else:
+            iterable = messages
         filtered_messages = []
-        for msg in messages:
+        for msg in iterable:
             message = self.service.users().messages().get(userId="me", id=msg["id"], format="metadata", metadataHeaders=["labels"]).execute()
             # If the message is not starred, add it to the filtered list
             if "STARRED" not in message.get("labelIds", []):
@@ -185,11 +190,11 @@ class benjamail:
         time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         df.to_csv(f"Logs/log-{time}.csv", index=True)
 
-    def get_older_emails(self, older_than_days, newer_than_days, batch_size):
+    def get_emails(self, older_than_days, newer_than_days, batch_size):
         # Search for emails in the inbox newer than {older_than_days} days.
         if newer_than_days and older_than_days:
-            print("Both newer than and older than requests activated, overriding to newer than request.")
-            time.sleep(5)
+            if self.verbose:
+                print("Both newer than and older than requests activated, overriding to newer than request.")
         if older_than_days:
             query = f"in:inbox older_than:{older_than_days}d" # TODO: This needs work, same with newer than, https://developers.google.com/gmail/api/guides/filtering
         if newer_than_days:  # Newer that search request overrides older than request for safety
@@ -203,11 +208,11 @@ class benjamail:
             return
 
         string_batch_list = []  # This will hold the big string for each batch.
-        string_in_batch = ""    # Accumulates email content for the current batch.
+        string_in_batch = f""    # Accumulates email content for the current batch.
         count = 0             # Counter for messages in the current batch.
         string_list = []        # List of all email content strings, similar to string_batch_list, but only single messages.
-
-        print(len(self.messages), "messages found.")
+        if self.verbose:
+            print("Messages to be used:", len(self.messages))
         for i, msg in enumerate(self.messages):
             try:
                 # Retrieve full message details
@@ -238,6 +243,8 @@ class benjamail:
 
         self.batch_string_list = string_batch_list
         self.string_list = string_list
+        for string in string_list:
+            print(string)
 
     def prompt_openai(self, message):
         # if self.assistant:
@@ -263,8 +270,7 @@ class benjamail:
             kwargs = {"temperature": 0.05}
         if self.model == "o3-mini":
             kwargs = dict(
-                reasoning = {"effort": "high"},
-                temperature = 0.5,
+                reasoning = {"effort": "low"},
                 text = {
                     "format": {
                         "type": "json_schema",
@@ -272,11 +278,13 @@ class benjamail:
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "folder": {
-                                    "type": "string"
+                                "folders": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"}
                                 },
                             },
-                            "required": ["index", "folder"],
+                            "required": ["folders"],
                             "additionalProperties": False  # So that it cant create extra keys
                         },
                         "strict": True
@@ -290,17 +298,10 @@ class benjamail:
             instructions = self.formatted_instructions,
             **kwargs,
         )
-        folder_results = json.loads(response.output_text)
-        print(folder_results)
-        sys.exit()
-        # End else statement (commented for assistants)
+        folder_results = json.loads(response.output_text)["folders"]
+        return folder_results
 
-        # if re.search(r"[.;:!?]", response):
-        #     raise Exception(f"Response contains punctuation, this should not happen: {response}")
-        # print(response)
-        return response
-        
-    def sort_emails(self, older_than_days=14, newer_than_days=None, nemails=None, batch_size=30, test=False, model="gpt-4o-mini",
+    def sort_emails(self, older_than_days=14, newer_than_days=None, batch_size=30, test=False, model="o3-mini",
                     max_emails=100, run_client=True):
 
         if model == "deepseek":
@@ -317,30 +318,27 @@ class benjamail:
         self.model = model
         self.authenticate_client(model)
 
-        if model == "gpt-4o-mini":
-            batch_size = 10
-
         # Get string_list and batch_string_list
-        self.get_older_emails(older_than_days, newer_than_days, batch_size)
+        self.get_emails(older_than_days, newer_than_days, batch_size)
 
         if run_client:
             # Iterate through the batch_string_list
             self.full_responses = []
             for string in tqdm(self.batch_string_list):
                 response = self.prompt_openai(string)
-                response_list = response.split(",")
-                self.full_responses += response_list
+                self.full_responses += response
             # Move emails based off labels
             self.move_messages(test)
 
 if __name__ == "__main__":
-    bm = benjamail()
+    bm = benjamail(verbose=True)
     bm.sort_emails(
-        newer_than_days = 14,
+        older_than_days = 14,
+        # newer_than_days = 3,
         test            = True,
         model           = "o3-mini",
-        max_emails      = 5,
-        run_client      = False
+        max_emails      = 30,
+        run_client      = True,
     )
 
 
