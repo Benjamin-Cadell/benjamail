@@ -1,3 +1,4 @@
+#%%
 from main import benjamail
 
 # Example startup script

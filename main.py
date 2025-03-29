@@ -1,5 +1,5 @@
 #%%
-import sys, os, re, csv, pandas as pd, numpy as np, utils, time, json
+import sys, os, pandas as pd, numpy as np, utils, time, json
 from tqdm import tqdm
 from datetime import datetime
 from google.oauth2 import service_account
@@ -24,7 +24,8 @@ class benjamail:
         self.openrouter_key           = f"{keys_folder}/{openrouter_key}"
         self.openai_instructions_file = openai_instructions_file
         self.labels_string            = open(labels_file, "r").read()
-        self.examples_string          = open(examples_file, "r").read()
+        with open(examples_file, "r", encoding="utf-8") as f:
+            self.examples_string = f.read()
         self.verbose                  = verbose
         self.openai_models            = ["gpt-4o-mini", "o1-mini", "o3-mini"]
         self.openrouter_models        = ["deepseek/deepseek-r1:free"]
@@ -112,12 +113,12 @@ class benjamail:
         labels = results.get("labels", [])
         
         if not labels:
-            print("No labels found.")
+            sys.stdout.write(f"No labels found.\n")
             return
         
-        print("Labels:")
+        sys.stdout.write(f"Labels:\n")
         for label in labels:
-            print(label["name"])
+            sys.stdout.write(label[f"name\n"])
 
     def search_messages(self, query):
         result = self.service.users().messages().list(userId='me', q=query, maxResults=self.max_emails).execute()
@@ -160,9 +161,9 @@ class benjamail:
     def move_messages(self, test):
         
         if len(self.messages) != len(self.full_responses):
-            print(self.full_responses)
+            sys.stdout.write(f"{self.full_responses}\n")
             raise Exception(f"Messages and results length do not match\n"
-                            f"Msgs: {len(self.messages)}\nResults: {len(self.full_responses)}")
+                            f"Msgs: {len(self.messages)}\nResults: {len(self.full_responses)}\n")
 
         if not test:
             log_add = ""
@@ -205,7 +206,7 @@ class benjamail:
         # Search for emails in the inbox newer than {older_than_days} days.
         if newer_than_days and older_than_days:
             if self.verbose:
-                print("Both newer than and older than requests activated, overriding to newer than request.")
+                sys.stdout.write(f"Both newer than and older than requests activated, overriding to newer than request.\n")
         if older_than_days:
             query = f"in:inbox older_than:{older_than_days}d"
         if newer_than_days:  # Newer that search request overrides older than request for safety
@@ -221,7 +222,7 @@ class benjamail:
 
         if not self.messages:
             if self.verbose:
-                print(f"No emails found with query: {query}.")
+                sys.stdout.write(f"No emails found with query: {query}.\n")
             self.nbatches = 0
             return
 
@@ -230,7 +231,7 @@ class benjamail:
         count = 0             # Counter for messages in the current batch.
         string_list = []        # List of all email content strings, similar to string_batch_list, but only single messages.
         if self.verbose:
-            print("Messages to be used:", len(self.messages))
+            sys.stdout.write(f"Messages to be used: {len(self.messages)}\n")
         for i, msg in enumerate(self.messages):
             try:
                 # Retrieve full message details
@@ -339,9 +340,9 @@ class benjamail:
         self.get_emails(older_than_days, newer_than_days, nemails, batch_size)
 
         if self.verbose:
-                print(f"nmessages: {self.nmessages}")
-                print(f"Max emails: {self.max_emails}")
-                print(f"nbatches: {self.nbatches}")
+                sys.stdout.write(f"nmessages: {self.nmessages}\n")
+                sys.stdout.write(f"Max emails: {self.max_emails}\n")
+                sys.stdout.write(f"nbatches: {self.nbatches}\n")
 
         if self.nmessages == 0:
             return
@@ -360,7 +361,7 @@ class benjamail:
             self.move_messages(test)
         
         if self.verbose:
-            print("Done")
+            sys.stdout.write(f"Done\n")
 
 if __name__ == "__main__":
     bm = benjamail(verbose=True)
@@ -368,8 +369,8 @@ if __name__ == "__main__":
         older_than_days = 14,
         # newer_than_days = 1,
         # nemails         = 60,
-        test            = True,
-        run_client      = False,
+        test            = False,
+        run_client      = True,
         max_emails      = 60,
         batch_size      = 30,
     )
