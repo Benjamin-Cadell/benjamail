@@ -33,10 +33,11 @@ class benjamail:
         self.authenticate_gmail()
 
     def authenticate_gmail(self):
-        SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+        SCOPES = ["https://mail.google.com/"]
         # The file token.json stores the user's access and refresh tokens, and is
         # created automatically when the authorization flow completes for the first
         # time.
+        creds = None
         if os.path.exists(self.token_file):
             creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
         # If there are no (valid) credentials available, let the user log in.
@@ -143,7 +144,9 @@ class benjamail:
 
         if self.max_emails > len(filtered_messages):
             self.max_emails = len(filtered_messages)
+
         self.messages = filtered_messages[:self.max_emails]
+        self.nmessages = len(self.messages)
 
     def get_label_id(self, label_name):
         """Returns the label ID for a given label name."""
@@ -157,10 +160,12 @@ class benjamail:
     def move_messages(self, test):
         
         if len(self.messages) != len(self.full_responses):
+            print(self.full_responses)
             raise Exception(f"Messages and results length do not match\n"
                             f"Msgs: {len(self.messages)}\nResults: {len(self.full_responses)}")
 
         if not test:
+            log_add = ""
             for i, msg in enumerate(self.messages):
 
                 # Special case for bin
@@ -180,6 +185,8 @@ class benjamail:
                             "addLabelIds": [label_id]
                         }
                     ).execute()
+        else:
+            log_add = "Tests/"
 
         # Log movements for potential later analysis
         df = {
@@ -188,23 +195,28 @@ class benjamail:
         }
         df = pd.DataFrame(df)
         time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        df.to_csv(f"Logs/log-{time}.csv", index=True)
+        df.to_csv(f"Logs/{log_add}log-{time}.csv", index=True)
 
-    def get_emails(self, older_than_days, newer_than_days, batch_size):
+    def get_emails(self, older_than_days, newer_than_days, nemails, batch_size):
         # Search for emails in the inbox newer than {older_than_days} days.
         if newer_than_days and older_than_days:
             if self.verbose:
                 print("Both newer than and older than requests activated, overriding to newer than request.")
         if older_than_days:
-            query = f"in:inbox older_than:{older_than_days}d" # TODO: This needs work, same with newer than, https://developers.google.com/gmail/api/guides/filtering
+            query = f"in:inbox older_than:{older_than_days}d"
         if newer_than_days:  # Newer that search request overrides older than request for safety
             query = f"in:inbox newer_than:{newer_than_days}d"
+        if nemails:
+            query = f"in:inbox"
+            self.max_emails = nemails
+        if older_than_days is None and newer_than_days is None and nemails is None:
+            raise Exception("Input something to for a number of emails")
 
         # Get self.messages
         self.search_messages(query=query)
 
         if not self.messages:
-            print(f"No emails older than {older_than_days} days found.")
+            print(f"No emails found with query: {query}.")
             return
 
         string_batch_list = []  # This will hold the big string for each batch.
@@ -243,8 +255,7 @@ class benjamail:
 
         self.batch_string_list = string_batch_list
         self.string_list = string_list
-        for string in string_list:
-            print(string)
+        self.nbatches = len(self.batch_string_list)
 
     def prompt_openai(self, message):
         # if self.assistant:
@@ -301,7 +312,7 @@ class benjamail:
         folder_results = json.loads(response.output_text)["folders"]
         return folder_results
 
-    def sort_emails(self, older_than_days=14, newer_than_days=None, batch_size=30, test=False, model="o3-mini",
+    def sort_emails(self, older_than_days=None, newer_than_days=None, nemails=None, batch_size=30, test=False, model="o3-mini",
                     max_emails=100, run_client=True):
 
         if model == "deepseek":
@@ -319,7 +330,13 @@ class benjamail:
         self.authenticate_client(model)
 
         # Get string_list and batch_string_list
-        self.get_emails(older_than_days, newer_than_days, batch_size)
+        self.get_emails(older_than_days, newer_than_days, nemails, batch_size)
+
+        if self.verbose:
+                print(f"nmessages: {self.nmessages}")
+                print(f"Max emails: {self.max_emails}")
+                print(f"nbatches: {self.nbatches}")
+
 
         if run_client:
             # Iterate through the batch_string_list
@@ -333,19 +350,20 @@ class benjamail:
 if __name__ == "__main__":
     bm = benjamail(verbose=True)
     bm.sort_emails(
-        older_than_days = 14,
-        # newer_than_days = 3,
-        test            = True,
-        model           = "o3-mini",
-        max_emails      = 30,
+        # older_than_days = 14,
+        # newer_than_days = 1,
+        nemails         = 20,
+        test            = False,
         run_client      = True,
+        max_emails      = 3,
+        batch_size      = 20,
     )
 
 
 #%%
 
-# for string in bm.string_list:
-#     print(string)
+for string in bm.string_list:
+    print(string)
 
 #print(bm.search_messages("hi"))
 
