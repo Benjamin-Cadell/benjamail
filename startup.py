@@ -1,5 +1,7 @@
 from main import benjamail
 
+# Example startup script
+
 bm = benjamail(verbose=True)
 bm.sort_emails(
     older_than_days = 14,

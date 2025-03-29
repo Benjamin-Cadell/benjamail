@@ -363,7 +363,7 @@ class benjamail:
             print("Done")
 
 if __name__ == "__main__":
-    bm = benjamail(verbose=False)
+    bm = benjamail(verbose=True)
     bm.sort_emails(
         older_than_days = 14,
         # newer_than_days = 1,
@@ -374,28 +374,5 @@ if __name__ == "__main__":
         batch_size      = 30,
     )
 
-
-#%%
-
-# for string in bm.string_list:
-#     print(string)
-
-#print(bm.search_messages("hi"))
-
-# for rule in self.rules:
-#     if rule["Word"] in email_content:
-#         # Retrieve the label ID for the target folder
-#         label_id = self.get_label_id(rule["Folder"])
-#         if label_id:
-#             # self.service.users().messages().modify(
-#             #     userId="me",
-#             #     id=msg["id"],
-#             #     body={
-#             #         "removeLabelIds": ["INBOX"],
-#             #         "addLabelIds": [label_id]
-#             #     }
-#             # ).execute()
-#             print(f"Moved message {msg['id']} to folder '{rule['Folder']}' because it contains '{rule['Word']}'.")
-#             matched = True
-#             break
-#         else:
+# conda env export > benjamail.yml
+# conda env create -f benjamail.yml

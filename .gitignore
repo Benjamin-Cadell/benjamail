@@ -4,3 +4,7 @@ __pycache__/
 Logs/
 examples.txt
 Archive/
+startup.spec
+build/
+dist/
+Startup/
