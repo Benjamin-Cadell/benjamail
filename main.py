@@ -166,7 +166,11 @@ class benjamail:
 
         if not test:
             log_add = ""
-            for i, msg in enumerate(self.messages):
+            if self.verbose:
+                iterable = tqdm(enumerate(self.messages), desc="Moving messages:")
+            else:
+                iterable = enumerate(self.messages)
+            for i, msg in iterable:
 
                 # Special case for bin
                 if self.full_responses[i] == "Bin":
@@ -341,22 +345,29 @@ class benjamail:
         if run_client:
             # Iterate through the batch_string_list
             self.full_responses = []
-            for string in tqdm(self.batch_string_list):
+            if self.verbose:
+                iterable = tqdm(self.batch_string_list, desc="Prompting AI model:")
+            else:
+                iterable = self.batch_string_list
+            for string in iterable:
                 response = self.prompt_openai(string)
                 self.full_responses += response
             # Move emails based off labels
             self.move_messages(test)
+        
+        if self.verbose:
+            print("Done")
 
 if __name__ == "__main__":
     bm = benjamail(verbose=True)
     bm.sort_emails(
         # older_than_days = 14,
         # newer_than_days = 1,
-        nemails         = 20,
+        nemails         = 60,
         test            = False,
         run_client      = True,
         max_emails      = 3,
-        batch_size      = 20,
+        batch_size      = 30,
     )
 
 
