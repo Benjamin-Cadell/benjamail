@@ -167,7 +167,7 @@ class benjamail:
         if not test:
             log_add = ""
             if self.verbose:
-                iterable = tqdm(enumerate(self.messages), desc="Moving messages:")
+                iterable = tqdm(enumerate(self.messages), desc="Moving messages:", total=len(self.messages))
             else:
                 iterable = enumerate(self.messages)
             for i, msg in iterable:
@@ -220,7 +220,9 @@ class benjamail:
         self.search_messages(query=query)
 
         if not self.messages:
-            print(f"No emails found with query: {query}.")
+            if self.verbose:
+                print(f"No emails found with query: {query}.")
+            self.nbatches = 0
             return
 
         string_batch_list = []  # This will hold the big string for each batch.
@@ -293,13 +295,13 @@ class benjamail:
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "folders": {
+                                "folder": {
                                     "type": "array",
                                     "items": {
                                         "type": "string"}
                                 },
                             },
-                            "required": ["folders"],
+                            "required": ["folder"],
                             "additionalProperties": False  # So that it cant create extra keys
                         },
                         "strict": True
@@ -313,7 +315,7 @@ class benjamail:
             instructions = self.formatted_instructions,
             **kwargs,
         )
-        folder_results = json.loads(response.output_text)["folders"]
+        folder_results = json.loads(response.output_text)["folder"]
         return folder_results
 
     def sort_emails(self, older_than_days=None, newer_than_days=None, nemails=None, batch_size=30, test=False, model="o3-mini",
@@ -341,6 +343,8 @@ class benjamail:
                 print(f"Max emails: {self.max_emails}")
                 print(f"nbatches: {self.nbatches}")
 
+        if self.nmessages == 0:
+            return
 
         if run_client:
             # Iterate through the batch_string_list
@@ -359,22 +363,22 @@ class benjamail:
             print("Done")
 
 if __name__ == "__main__":
-    bm = benjamail(verbose=True)
+    bm = benjamail(verbose=False)
     bm.sort_emails(
-        # older_than_days = 14,
+        older_than_days = 14,
         # newer_than_days = 1,
-        nemails         = 60,
-        test            = False,
-        run_client      = True,
-        max_emails      = 3,
+        # nemails         = 60,
+        test            = True,
+        run_client      = False,
+        max_emails      = 60,
         batch_size      = 30,
     )
 
 
 #%%
 
-for string in bm.string_list:
-    print(string)
+# for string in bm.string_list:
+#     print(string)
 
 #print(bm.search_messages("hi"))
 
