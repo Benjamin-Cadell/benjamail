@@ -27,7 +27,7 @@ class benjamail:
         with open(examples_file, "r", encoding="utf-8") as f:
             self.examples_string = f.read()
         self.verbose                  = verbose
-        self.openai_models            = ["gpt-4o-mini", "o1-mini", "o3-mini"]
+        self.openai_models            = ["gpt-4o-mini", "o1-mini", "o3-mini", "o4-mini"]
         self.openrouter_models        = ["deepseek/deepseek-r1:free"]
         self.assistant                = False
         # self.assistant_models = ["gpt-4o-mini", "o3-mini"] # Assistant models must be in self.openai_models
@@ -143,11 +143,12 @@ class benjamail:
             if "STARRED" not in message.get("labelIds", []):
                 filtered_messages.append(msg)
 
-        if self.max_emails > len(filtered_messages):
-            self.max_emails = len(filtered_messages)
-
-        self.messages = filtered_messages[:self.max_emails]
+        self.messages = filtered_messages
         self.nmessages = len(self.messages)
+
+        if len(self.messages) < self.min_emails:
+            sys.stdout.write(f"Only found {self.nmesssages} emails (less than required {self.min_emails})")
+            sys.exit(0)
 
     def get_label_id(self, label_name):
         """Returns the label ID for a given label name."""
@@ -214,6 +215,7 @@ class benjamail:
         if nemails:
             query = f"in:inbox"
             self.max_emails = nemails
+            self.min_emails = nemails
         if older_than_days is None and newer_than_days is None and nemails is None:
             raise Exception("Input something to for a number of emails")
 
@@ -286,7 +288,7 @@ class benjamail:
         # else:
         if self.model == "deepseek/deepseek-r1:free":
             kwargs = {"temperature": 0.05}
-        if self.model == "o3-mini":
+        if self.model in self.openai_models:
             kwargs = dict(
                 reasoning = {"effort": "low"},
                 text = {
@@ -319,8 +321,8 @@ class benjamail:
         folder_results = json.loads(response.output_text)["folder"]
         return folder_results
 
-    def sort_emails(self, older_than_days=None, newer_than_days=None, nemails=None, batch_size=30, test=False, model="o3-mini",
-                    max_emails=100, run_client=True):
+    def sort_emails(self, older_than_days=None, newer_than_days=None, nemails=None, batch_size=30, test=False, model="o4-mini",
+                    min_emails = 1, max_emails=100, run_client=True):
 
         if model == "deepseek":
             model = "deepseek/deepseek-r1:free"
@@ -333,6 +335,7 @@ class benjamail:
         # else:
         #     self.assistant = False
         self.max_emails = max_emails
+        self.min_emails = min_emails
         self.model = model
         self.authenticate_client(model)
 
@@ -341,6 +344,7 @@ class benjamail:
 
         if self.verbose:
                 sys.stdout.write(f"nmessages: {self.nmessages}\n")
+                sys.stdout.write(f"Min emails: {self.min_emails}\n")
                 sys.stdout.write(f"Max emails: {self.max_emails}\n")
                 sys.stdout.write(f"nbatches: {self.nbatches}\n")
 
@@ -369,11 +373,17 @@ if __name__ == "__main__":
         older_than_days = 14,
         # newer_than_days = 1,
         # nemails         = 60,
-        test            = False,
-        run_client      = True,
+        test            = True,
+        run_client      = False,
+        min_emails      = 20,
         max_emails      = 60,
         batch_size      = 30,
     )
+    print(bm.messages)
 
 # conda env export > benjamail.yml
 # conda env create -f benjamail.yml
+
+#%%
+
+print(bm.string_list)
